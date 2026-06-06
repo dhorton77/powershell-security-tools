@@ -1,0 +1,311 @@
+# Splunk SPL Queries — SSH Brute Force Detection & Investigation
+
+**Lab Exercise:** SSH Brute Force Attack Simulation & Detection  
+**Date:** 3–9 May 2026  
+**Analyst:** David Boyd Horton
+
+These queries correlate Windows Security Event logs, Wazuh alerts, and SSH logs to detect and investigate SSH brute force attacks.
+
+---
+
+## Query 1: Find All Failed SSH Login Attempts (Last 24 Hours)
+
+```spl
+index=* sourcetype="wazuh" EventCode=4625
+| table _time, host, Account_Name, Failure_Reason, Source_Network_Address
+| stats count by Account_Name, Source_Network_Address
+| sort - count
+```
+
+**Purpose:** Shows all failed login attempts with source IP  
+**Expected Result:** List of accounts targeted and attacker IPs  
+**Lab Use:** Confirms attack was detected
+
+---
+
+## Query 2: Brute Force Pattern — Multiple Failures from Single IP
+
+```spl
+index=* sourcetype="wazuh" EventCode=4625
+| stats count as failure_count by Source_Network_Address, _time
+| where failure_count > 3
+| table _time, Source_Network_Address, failure_count
+| sort - _time
+```
+
+**Purpose:** Identifies IPs making multiple failed login attempts  
+**Alert Level:** Medium  
+**Lab Use:** Shows attacker IP and attempt frequency
+
+---
+
+## Query 3: Timeline of Attack — Failed Attempts Over Time
+
+```spl
+index=* sourcetype="wazuh" EventCode=4625 host="Windows-11-test"
+| timechart count by Account_Name
+```
+
+**Purpose:** Visual timeline showing attack progression  
+**Lab Use:** Shows when failures occurred
+
+---
+
+## Query 4: Account Enumeration Detection — Multiple Invalid Users
+
+```spl
+index=* sourcetype="wazuh" EventCode=4625 Failure_Reason="Unknown user name or bad password"
+| stats count as invalid_user_attempts by Source_Network_Address, Account_Name
+| where invalid_user_attempts > 5
+| rename Source_Network_Address as "Attacker IP", Account_Name as "Invalid User"
+```
+
+**Purpose:** Detects attempts with non-existent usernames  
+**Lab Use:** Shows attacker was enumerating valid usernames
+
+---
+
+## Query 5: Successful Login After Failed Attempts — Possible Compromise
+
+```spl
+index=* sourcetype="wazuh" host="Windows-11-test"
+| search (EventCode=4625 OR EventCode=4624)
+| stats earliest(_time) as first_failure latest(_time) as last_success count(eval(EventCode=4625)) as failures count(eval(EventCode=4624)) as successes by Source_Network_Address
+| where successes > 0 AND failures > 0
+| eval compromise_window=last_success-first_failure
+| rename Source_Network_Address as "Source IP", compromise_window as "Time Between Failure & Success"
+```
+
+**Purpose:** Detects if attacker gained access after brute force  
+**Alert Level:** CRITICAL  
+**Lab Use:** Shows whether attack was successful
+
+---
+
+## Query 6: Wazuh Rule Detections — SSH Brute Force Alerts
+
+```spl
+index=wazuh sourcetype="wazuh" (rule_id=100001 OR rule_id=100002 OR rule_id=100003 OR rule_id=100006)
+| table _time, rule_id, description, src_ip, host
+| rename src_ip as "Source IP", description as "Alert Type"
+| sort - _time
+```
+
+**Purpose:** Shows all Wazuh SSH brute force rule hits  
+**Alert Levels:** Rule 100002 (L8), Rule 100003 (L10), Rule 100006 (L12)  
+**Lab Use:** Confirms Wazuh detected the attack
+
+---
+
+## Query 7: Hydra Tool Detection — Automated Brute Force Pattern
+
+```spl
+index=* sourcetype="wazuh" EventCode=4625 
+| stats count as failure_count by Source_Network_Address, _time
+| where failure_count > 15
+| search _time > (now()-3600)
+| rename Source_Network_Address as "Attacker IP"
+| stats sum(failure_count) as total_failures by "Attacker IP"
+```
+
+**Purpose:** Detects high-frequency automated attacks (Hydra signature)  
+**Expected Result:** 20+ failures per minute from single IP  
+**Lab Use:** Phase 4 attack (Hydra with rockyou.txt)
+
+---
+
+## Query 8: Correlation — Attack Source IP to Kali Linux
+
+```spl
+index=* sourcetype="firewall" src="192.168.1.21" dest_port=22 
+OR index=* sourcetype="wazuh" Source_Network_Address="192.168.1.21"
+| stats count by sourcetype, _time
+| timechart count by sourcetype
+```
+
+**Purpose:** Correlates attack traffic from known Kali Linux IP  
+**Lab Use:** Confirms Agent 005 (Kali) was the attacker
+
+---
+
+## Query 9: Failed vs Successful Login Ratio
+
+```spl
+index=* sourcetype="wazuh" host="Windows-11-test" (EventCode=4625 OR EventCode=4624)
+| stats count(eval(EventCode=4625)) as Failed count(eval(EventCode=4624)) as Successful
+| eval Success_Rate=round((Successful/(Failed+Successful))*100,2)
+```
+
+**Purpose:** Shows attack success rate  
+**Lab Result:** 0% success rate = strong defense  
+**Lab Use:** Proves endpoint was not compromised
+
+---
+
+## Query 10: Event ID Breakdown — Attack Methodology
+
+```spl
+index=* sourcetype="wazuh" host="Windows-11-test" EventCode=4625
+| stats count by EventCode, Status_Code
+| rename Status_Code as "Windows Error Code"
+```
+
+**Purpose:** Shows Windows error codes for failures  
+**Common Codes:**
+- 0xC0000064 = User does not exist
+- 0xC000006D = Bad username or password
+- 0xC0000072 = Account locked
+
+---
+
+## Query 11: Real-Time Alert — SSH Brute Force in Progress
+
+```spl
+index=wazuh rule_id=100006
+| alert
+```
+
+**Purpose:** Triggers real-time alert when critical rule fires  
+**Configuration:**
+- Save as scheduled search
+- Run every 60 seconds
+- Alert on rule ID 100006 (Level 12 - Hydra detection)
+
+---
+
+## Query 12: Comprehensive Investigation Dashboard
+
+```spl
+index=* host="Windows-11-test"
+| search (sourcetype="wazuh" EventCode=4625) 
+   OR (sourcetype="wazuh" rule_id>=100001 rule_id<=100008)
+   OR (sourcetype="firewall" src="192.168.1.21" dest_port=22)
+| stats earliest(_time) as attack_start latest(_time) as attack_end count as total_events by sourcetype
+| eval attack_duration=attack_end-attack_start
+```
+
+**Purpose:** Full attack overview in one query  
+**Lab Use:** High-level assessment of attack timeline and scope
+
+---
+
+## Setup Instructions
+
+### Step 1: Configure Windows Event Log Forwarding to Splunk
+
+**On Windows 11 Target VM:**
+
+```powershell
+# Install Splunk Universal Forwarder
+# Download from https://www.splunk.com/download/splunk-universal-forwarder
+
+# Configure inputs.conf
+cd "C:\Program Files\SplunkUniversalForwarder\etc\system\local\"
+# Edit inputs.conf to add:
+
+[WinEventLog://Security]
+index = main
+sourcetype = wazuh
+host = Windows-11-test
+```
+
+### Step 2: Forward Wazuh Alerts to Splunk
+
+**On Wazuh Manager (192.168.1.15):**
+
+```bash
+# Edit ossec.conf
+sudo nano /var/ossec/etc/ossec.conf
+
+# Ensure JSON alerting is enabled:
+<logall>yes</logall>
+<logall_json>yes</logall_json>
+
+# Restart Wazuh
+sudo systemctl restart wazuh-manager
+
+# Verify JSON logs exist:
+tail -f /var/ossec/logs/alerts/alerts.json | grep -i "4625\|SSH"
+```
+
+### Step 3: Create Splunk Data Input
+
+1. **Splunk Web** → Settings → Data Inputs
+2. Files & Directories → New Input
+3. Path: `/var/ossec/logs/alerts/alerts.json`
+4. Source type: `json`
+5. Index: `wazuh`
+
+### Step 4: Verify Queries Work
+
+Before running attack:
+1. Run Query 1 above
+2. Create a test failed login on Windows 11
+3. Confirm event appears in Splunk within 30 seconds
+4. If successful, queries are ready for lab
+
+---
+
+## Expected Query Results During Lab Exercise
+
+### Phase 1 — Manual SSH Brute Force (3 attempts)
+
+**Query 1 Result:**
+```
+Account_Name     | Source_Network_Address | failure_count
+NOUSER           | 192.168.1.21           | 3
+```
+
+**Query 6 Result:**
+```
+rule_id: 100002
+description: SSH brute force attack detected - multiple authentication failures from 192.168.1.21
+```
+
+### Phase 4 — Hydra Attack (1000+ attempts)
+
+**Query 7 Result:**
+```
+Attacker IP: 192.168.1.21
+total_failures: 1247
+```
+
+**Query 6 Result:**
+```
+rule_id: 100006
+description: CRITICAL ALERT: SSH automated brute force attack detected - possible Hydra or similar tool
+```
+
+---
+
+## Troubleshooting
+
+**Q: Queries return no results**
+- Verify Windows Event Log forwarder is running
+- Check Splunk Universal Forwarder status: `Get-Service SplunkForwarder`
+- Verify data is flowing: `index=* host="Windows-11-test" | stats count`
+
+**Q: Wazuh alerts not appearing**
+- Confirm `/var/ossec/logs/alerts/alerts.json` exists
+- Check Splunk is monitoring the file: Settings → Data Inputs → Files
+- Verify JSON source type is set correctly
+
+**Q: No SSH failures showing**
+- Create test failed login: `ssh wronguser@192.168.1.8`
+- Check Windows 11 Event Viewer for Event ID 4625
+- Verify Wazuh agent is active on Windows 11
+
+---
+
+## Resources
+
+- [Splunk Query Language (SPL)](https://docs.splunk.com/Documentation/Splunk/latest/SearchReference)
+- [Windows Event ID 4625](https://learn.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4625)
+- [Wazuh Windows Monitoring](https://documentation.wazuh.com/current/user-manual/agent/agent-management/agent-status.html)
+- [Brute Force Attacks - MITRE ATT&CK T1110](https://attack.mitre.org/techniques/T1110/)
+
+---
+
+**Analyst:** David Boyd Horton  
+**Created:** 9 May 2026  
+**Classification:** Portfolio — Home Lab Exercise

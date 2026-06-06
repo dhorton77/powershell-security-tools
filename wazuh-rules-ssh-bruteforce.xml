@@ -1,0 +1,162 @@
+<!-- 
+Wazuh Custom Rules — SSH Brute Force Detection
+Lab Exercise: SSH Brute Force Attack Simulation & Detection
+Date: 3-9 May 2026
+Analyst: David Boyd Horton
+
+These rules detect SSH authentication failures and brute force patterns
+from the home lab security testing programme.
+
+Installation:
+1. Copy this content
+2. Add to /var/ossec/etc/rules/local_rules.xml on Wazuh manager
+3. Restart Wazuh: sudo systemctl restart wazuh-manager
+-->
+
+<group name="ssh_bruteforce,attack_detection">
+
+<!-- ============================================================
+     RULE 100001: SSH Authentication Failure Detection
+     Detects single failed SSH login attempts
+     ============================================================ -->
+<rule id="100001" level="5">
+    <if_sid>5710</if_sid>
+    <description>SSH authentication failure detected</description>
+    <group>authentication_failed,ssh_bruteforce</group>
+    <mitre>
+        <id>T1110.001</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100002: SSH Brute Force Pattern Recognition
+     Detects multiple failed SSH attempts in short timeframe
+     Threshold: 3+ failures from same source in 5 minutes
+     ============================================================ -->
+<rule id="100002" level="8">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <timeframe>300</timeframe>
+    <frequency>3</frequency>
+    <description>SSH brute force attack detected - multiple authentication failures from $(srcip)</description>
+    <group>ssh_bruteforce,attack_detection,credential_access</group>
+    <mitre>
+        <id>T1110</id>
+        <id>T1110.001</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100003: SSH Brute Force - High Frequency
+     Escalated alert for sustained brute force attempts
+     Threshold: 10+ failures from same source in 10 minutes
+     ============================================================ -->
+<rule id="100003" level="10">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <timeframe>600</timeframe>
+    <frequency>10</frequency>
+    <description>CRITICAL: SSH brute force attack - sustained high-frequency attempts from $(srcip) - possible automated tool</description>
+    <group>ssh_bruteforce,attack_detection,credential_access,critical</group>
+    <mitre>
+        <id>T1110</id>
+        <id>T1110.001</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100004: SSH Invalid User Detection
+     Detects attempts with non-existent usernames
+     ============================================================ -->
+<rule id="100004" level="6">
+    <if_sid>5711</if_sid>
+    <description>SSH login attempt with invalid username</description>
+    <group>ssh_bruteforce,authentication_failed</group>
+    <mitre>
+        <id>T1110.001</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100005: SSH Brute Force - Multiple Invalid Users
+     Detects attackers trying multiple non-existent accounts
+     ============================================================ -->
+<rule id="100005" level="9">
+    <if_matched_sid>100004</if_matched_sid>
+    <same_source_ip />
+    <timeframe>300</timeframe>
+    <frequency>5</frequency>
+    <description>SSH brute force with multiple invalid usernames from $(srcip) - user enumeration attempt</description>
+    <group>ssh_bruteforce,attack_detection,reconnaissance</group>
+    <mitre>
+        <id>T1110.001</id>
+        <id>T1592.002</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100006: SSH Brute Force - Insider Threat (Hydra Detection)
+     Detects automated password spray with tools like Hydra
+     Characteristics: Very high frequency, multiple passwords, short intervals
+     ============================================================ -->
+<rule id="100006" level="12">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <timeframe>60</timeframe>
+    <frequency>20</frequency>
+    <description>CRITICAL ALERT: SSH automated brute force attack detected - possible Hydra or similar tool from $(srcip) - INSIDER THREAT or advanced attacker</description>
+    <group>ssh_bruteforce,attack_detection,insider_threat,critical_attack</group>
+    <mitre>
+        <id>T1110</id>
+        <id>T1110.001</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100007: SSH Successful Login After Failed Attempts
+     Detects successful compromise after brute force
+     ============================================================ -->
+<rule id="100007" level="11">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <id>5715</id>
+    <timeframe>600</timeframe>
+    <description>CRITICAL: Successful SSH login from $(srcip) after multiple failed attempts - possible account compromise</description>
+    <group>ssh_bruteforce,attack_detection,credential_access,compromise</group>
+    <mitre>
+        <id>T1110.001</id>
+        <id>T1021.006</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 100008: SSH Connection from Attacker IP (Kali Linux)
+     Custom rule for lab environment to flag known attack platform
+     ============================================================ -->
+<rule id="100008" level="9">
+    <if_sid>5700</if_sid>
+    <srcip>192.168.1.21</srcip>
+    <description>SSH connection attempt from Kali Linux (192.168.1.21) - lab attack platform detected</description>
+    <group>ssh_bruteforce,attack_detection,lab_monitoring</group>
+    <mitre>
+        <id>T1021.006</id>
+    </mitre>
+</rule>
+
+<!-- ============================================================
+     RULE 60122: Wazuh Built-in - Logon Failure
+     Standard Wazuh rule for Windows authentication failures
+     Detects Event ID 4625 (failed logon)
+     ============================================================ -->
+<!-- Note: Rule 60122 is built-in to Wazuh and does not need to be created -->
+
+</group>
+
+<!-- ============================================================
+     INTEGRATION WITH WINDOWS SECURITY EVENTS
+     These rules work with Windows Event ID mapping:
+     - Event ID 4625 = Failed Logon (Wazuh Rule 60122)
+     - Event ID 4624 = Successful Logon (Wazuh Rule 60014)
+     - Event ID 4720 = User Account Created
+     - Event ID 4722 = User Account Enabled
+     ============================================================ -->
